@@ -29,15 +29,15 @@ def get_cnn_articles():
     cnn_articles = []
     for item in items:
         link = f"https://lite.cnn.com{item.find('a')['href']}"
-        if link not in excluded_urls:
+        if link not in excluded_urls and "/politics/" in link:
             title = item.find('a').text.strip()
-            cnn_articles.append(f"CNN Title: {title}\nLink: {link}\n")
+            cnn_articles.append((title, link))
    
-    return "\n".join(cnn_articles)
+    return cnn_articles
 
 def get_fox_news_articles():
     excluded_urls = load_excluded_articles()
-    r = requests.get('https://moxie.foxnews.com/google-publisher/latest.xml')
+    r = requests.get('https://moxie.foxnews.com/google-publisher/politics.xml')
     root = ET.fromstring(r.content)
     items = root.findall('.//item')
    
@@ -46,9 +46,9 @@ def get_fox_news_articles():
         link = item.find('link').text
         if link not in excluded_urls:
             title = item.find('title').text
-            fox_articles.append(f"FOX Title: {title}\nLink: {link}\n")
+            fox_articles.append((title, link))
    
-    return "\n".join(fox_articles)
+    return fox_articles
 
 # Get and store CNN articles
 cnn_content = get_cnn_articles()
@@ -58,25 +58,25 @@ fox_news_content = get_fox_news_articles()
 
 # Print the results
 print("CNN Articles:")
-print(cnn_content)
+print("\n".join([f"CNN Title: {title}" for title, _ in cnn_content]))
 print("\nFox News Articles:")
-print(fox_news_content)
-
+print("\n".join([f"FOX Title: {title}" for title, _ in fox_news_content]))
 
 
 
 def answer_question(cnn_content, fox_news_content):
+    cnn_titles = "\n".join([f"CNN Title: {title}" for title, _ in cnn_content])
+    fox_titles = "\n".join([f"FOX Title: {title}" for title, _ in fox_news_content])
+    
     answer = client_anthropic.messages.create(
-        model="claude-3-5-sonnet-20240620",
-        #model="claude-3-opus-20240229",
-        #model="claude-3-haiku-20240307",
+        model="claude-3-5-sonnet-20241022",
         max_tokens=2000,
         temperature=0,
         system="You are an expert at reading news, analyzing them, and answering questions about them. \
-You will receive a list of recent articles published on CNN and Fox News websites. \
-The list of CNN articles is provided within the <CNN_articles></CNN_articles> tag. \
-The list of Fox News articles is provided within the <FOX_articles></FOX_articles> tag. \
-Read the lists of these articles carefully and remember them all because I will give you an important task related to these lists.",
+You will receive a list of recent article titles published on CNN and Fox News websites. \
+The list of CNN article titles is provided within the <CNN_articles></CNN_articles> tag. \
+The list of Fox News article titles is provided within the <FOX_articles></FOX_articles> tag. \
+Read the lists of these article titles carefully and remember them all because I will give you an important task related to these lists.",
 
         messages=[
             {
@@ -84,7 +84,7 @@ Read the lists of these articles carefully and remember them all because I will 
                 "content": [
                 {
                     "type": "text",
-                    "text": f"<CNN_articles>\n{cnn_content}\n</CNN_articles>\n\n\n <FOX_articles>\n{fox_news_content}\n</FOX_articles>\n\n\n \
+                    "text": f"<CNN_articles>\n{cnn_titles}\n</CNN_articles>\n\n\n <FOX_articles>\n{fox_titles}\n</FOX_articles>\n\n\n \
 By comparing article titles, find a pair of corresponding articles on CNN and FOX News that describe the same event or news. \
 You might notice many potential pairs like that, but only output one pair that you are most certain is on the exact same topic. \
 Your output needs to absolutely meet all the following requirements: \
@@ -95,7 +95,6 @@ Your output needs to absolutely meet all the following requirements: \
 * If you cannot find a matching pair of articles where you are 100 percent sure they are about exactly the same topic, just say that you cannot find it, don't try to make up an answer. \
 It's perfectly fine if you cannot find a matching pair of articles. \
 \nBefore providing the pair of articles, please think about it step-by-step within <thinking></thinking> tags. Then, provide your final answer within <answer></answer> tags. \
-Provide the complete links to the selected articles in the <link_to_cnn_article></link_to_cnn_article> and <link_to_fox_article></link_to_fox_article> tags. \
 Provide the full titles of the selected articles in the <title_of_cnn_article></title_of_cnn_article> and <title_of_fox_article></title_of_fox_article> tags.",
                 }
             ]
@@ -104,8 +103,6 @@ Provide the full titles of the selected articles in the <title_of_cnn_article></
     )
     # print (answer)
     return answer.content[0].text
-
-
 
 
 LLM_answer_pair = answer_question(cnn_content, fox_news_content)
@@ -119,8 +116,7 @@ def extract_text_from_tags(LLM_answer, tag_name):
     if match:
         return match.group(1).strip()
     else:
-        print(f"No match found for {tag_name}.")
-        exit(1)
+        return None  # Return None instead of exiting
 
 def save_links_to_file(links):
     try:
@@ -132,53 +128,47 @@ def save_links_to_file(links):
     except IOError as e:
         print(f"An error occurred while writing to the file: {e}")
 
+def normalize_text(text):
+    # Remove all non-alphanumeric characters and convert to lowercase
+    return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
+
+def find_article_link(title, content):
+    normalized_title = normalize_text(title)
+    for article_title, article_link in content:
+        if normalized_title in normalize_text(article_title):
+            return article_link
+    return None
+
+def verify_article_existence(search_text, list_of_articles):    
+    normalized_search_text = normalize_text(search_text)
+    
+    for title, link in list_of_articles:
+        normalized_title = normalize_text(title)
+        normalized_link = normalize_text(link)
+        if normalized_search_text in normalized_title or normalized_search_text == normalized_link:
+            return True
+    
+    print(f"The following text could not be found in the list of articles: {search_text}")
+    print(f"List of articles: \n {list_of_articles}")
+    return False
+    
+
 # Usage
-link_to_cnn_article = extract_text_from_tags(LLM_answer_pair, 'link_to_cnn_article')
-link_to_fox_article = extract_text_from_tags(LLM_answer_pair, 'link_to_fox_article')
 title_of_cnn_article = extract_text_from_tags(LLM_answer_pair, 'title_of_cnn_article')
 title_of_fox_article = extract_text_from_tags(LLM_answer_pair, 'title_of_fox_article')
 
+if title_of_cnn_article is None or title_of_fox_article is None:
+    print("No matching pair of articles found. Exiting.")
+    exit(0)
+
+link_to_cnn_article = find_article_link(title_of_cnn_article, cnn_content)
+link_to_fox_article = find_article_link(title_of_fox_article, fox_news_content)
 
 print(f"CNN title: {title_of_cnn_article}")
 print(f"CNN link: {link_to_cnn_article}\n")
 print(f"Fox title: {title_of_fox_article}")
 print(f"Fox link: {link_to_fox_article}")
 
-
-def normalize_quotes(text):
-    """
-    Normalize various types of quotes and apostrophes to standard ASCII versions.
-    """
-    replacements = {
-        '‘': "'",  # Right single quotation mark
-        '’': "'",  # Left single quotation mark
-        '“': '"',  # Left double quotation mark
-        '”': '"',  # Right double quotation mark
-        '′': "'",  # Prime
-        '‚': "'",  # Single low-9 quotation mark
-        '‛': "'",  # Single high-reversed-9 quotation mark
-        '„': '"',  # Double low-9 quotation mark
-        '⹂': '"',  # Double low-9 reversed quotation mark
-        '‟': '"',  # Double high-reversed-9 quotation mark
-        '`': "'",  # Grave accent
-        '´': "'",  # Acute accent
-    }
-    for original, replacement in replacements.items():
-        text = text.replace(original, replacement)
-    return text
-
-def verify_article_existence(article, list_of_articles):    
-    normalized_article = normalize_quotes(article.strip())
-    normalized_list = normalize_quotes(list_of_articles)
-    
-    if normalized_article in normalized_list:
-        return True
-    
-    else:
-        print(f"The following text could not be found in the list of articles: {normalized_article}")
-        print(f"List of articles: \n {normalized_list}")
-        return False
-    
 
 if not (verify_article_existence(link_to_fox_article, fox_news_content) and 
         verify_article_existence(link_to_cnn_article, cnn_content) and
@@ -189,9 +179,7 @@ if not (verify_article_existence(link_to_fox_article, fox_news_content) and
 
 def verify_LLM_answer(cnn_title, fox_title):
     answer = client_anthropic.messages.create(
-        model="claude-3-5-sonnet-20240620",
-        #model="claude-3-opus-20240229",
-        #model="claude-3-haiku-20240307",
+        model="claude-3-5-sonnet-20241022",
         max_tokens=2000,
         temperature=0,
         system="You are a superior LLM that verifiers work of an inferior LLM. The inferior LLM often makes mistakes, and you are the expert at finding those mistakes. \
@@ -237,8 +225,6 @@ outcome_of_LLM_verification = extract_text_from_tags(LLM_verification_judgement,
 if outcome_of_LLM_verification == 'Incorrect':
     print ("The LLM made a mistake. Please try again.")
     exit (1)
-
-
 
 # Save links to file after all extractions and verifications are done
 save_links_to_file([link_to_cnn_article, link_to_fox_article])
@@ -286,9 +272,7 @@ final_comparison += f"Fox link: {link_to_fox_article}\n\n"
 
 def compare_articles(cnn_content, fox_news_content):
     answer = client_anthropic.messages.create(
-        model="claude-3-5-sonnet-20240620",
-        #model="claude-3-opus-20240229",
-        #model="claude-3-haiku-20240307",
+        model="claude-3-5-sonnet-20241022",
         max_tokens=2000,
         temperature=0,
         system="You are an expert at reading news, analyzing them, and answering questions about them. You will receive \
@@ -423,3 +407,4 @@ def update_gist(new_content, filename="CNNvsFOX.md"):
 
 success = update_gist(formatted_output)
 print(f"Gist update {'successful' if success else 'failed'}")
+
